@@ -17,32 +17,32 @@ import {
 } from '@mui/icons-material';
 import axios from 'axios';
 
-const useStyles = styled((theme) => ({
-  container: {
-    paddingTop: theme.spacing(4),
-    paddingBottom: theme.spacing(4),
-  },
-  paper: {
-    padding: theme.spacing(3),
-  },
-  received: {
-    color: theme.palette.success.main,
-  },
-  sent: {
-    color: theme.palette.error.main,
-  },
-  amount: {
-    fontWeight: 'bold',
-  },
+// Styled components
+const StyledContainer = styled(Container)(({ theme }) => ({
+  paddingTop: theme.spacing(4),
+  paddingBottom: theme.spacing(4),
+}));
+
+const StyledPaper = styled(Paper)(({ theme }) => ({
+  padding: theme.spacing(3),
+}));
+
+const StyledTypography = styled(Typography)(({ theme, transactionType }) => ({
+  fontWeight: 'bold',
+  color: transactionType === 'credit' 
+    ? theme.palette.success.main 
+    : theme.palette.success.main, // Changed to green for sent transactions too
 }));
 
 function Transactions() {
-  const classes = useStyles();
   const [transactions, setTransactions] = useState([]);
 
   useEffect(() => {
-    // Fetch transactions
-    axios.get('/api/transactions')
+    // Fetch transactions from the correct endpoint
+    const token = localStorage.getItem('token');
+    axios.get('http://localhost:5000/api/transactions', {
+      headers: { Authorization: `Bearer ${token}` }
+    })
       .then(response => {
         setTransactions(response.data);
       })
@@ -52,42 +52,40 @@ function Transactions() {
   }, []);
 
   return (
-    <Container className={classes.container}>
-      <Paper className={classes.paper}>
+    <StyledContainer>
+      <StyledPaper>
         <Typography variant="h5" gutterBottom>
           Transaction History
         </Typography>
         <List>
-          {transactions.map((transaction) => (
-            <ListItem key={transaction.id} divider>
-              <ListItemIcon>
-                {transaction.type === 'credit' ? (
-                  <ReceiveIcon className={classes.received} />
-                ) : (
-                  <SendIcon className={classes.sent} />
-                )}
-              </ListItemIcon>
-              <ListItemText
-                primary={transaction.type === 'credit' ? 'Received' : 'Sent'}
-                secondary={new Date(transaction.date).toLocaleDateString()}
-              />
-              <ListItemSecondaryAction>
-                <Typography
-                  className={classes.amount + ' ' + 
-                    (transaction.type === 'credit' ? classes.received : classes.sent)
-                  }
-                >
-                  {transaction.type === 'credit' ? '+' : '-'}${transaction.amount}
-                </Typography>
-                <Chip
-                  size="small"
-                  label="Completed"
-                  color="primary"
+          {transactions && transactions.length > 0 ? (
+            transactions.map((transaction) => (
+              <ListItem key={transaction._id} divider>
+                <ListItemIcon>
+                  {transaction.type === 'credit' ? (
+                    <ReceiveIcon color="success" />
+                  ) : (
+                    <SendIcon color="success" />
+                  )}
+                </ListItemIcon>
+                <ListItemText
+                  primary={transaction.type === 'credit' ? 'Received' : 'Sent'}
+                  secondary={new Date(transaction.date).toLocaleDateString()}
                 />
-              </ListItemSecondaryAction>
-            </ListItem>
-          ))}
-          {transactions.length === 0 && (
+                <ListItemSecondaryAction>
+                  <StyledTypography transactionType={transaction.type}>
+                    {transaction.type === 'credit' ? '+' : '-'}${transaction.amount}
+                  </StyledTypography>
+                  <Chip
+                    size="small"
+                    label="Completed"
+                    color="primary"
+                    sx={{ ml: 1 }}
+                  />
+                </ListItemSecondaryAction>
+              </ListItem>
+            ))
+          ) : (
             <ListItem>
               <ListItemText
                 primary="No transactions found"
@@ -96,8 +94,8 @@ function Transactions() {
             </ListItem>
           )}
         </List>
-      </Paper>
-    </Container>
+      </StyledPaper>
+    </StyledContainer>
   );
 }
 

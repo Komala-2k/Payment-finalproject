@@ -39,8 +39,8 @@ A full-stack digital payment wallet application built with the MERN stack (Mongo
 
 1. Clone the repository
 ```bash
-git clone https://github.com/Komala-2k/Payment-wallet-week2.git
-cd Payment-wallet-week2
+git clone https://github.com/Srivani7898/Paytm-clone-finalProject-.git 
+cd Paytm-clone-finalproject
 ```
 
 2. Install Backend Dependencies

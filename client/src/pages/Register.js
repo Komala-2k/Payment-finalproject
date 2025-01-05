@@ -11,18 +11,17 @@ import {
   CircularProgress,
   useTheme
 } from '@mui/material';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 
-const Login = () => {
+const Register = () => {
   const theme = useTheme();
   const navigate = useNavigate();
-  const location = useLocation();
-  const { login } = useAuth();
   const [formData, setFormData] = useState({
+    name: '',
     email: '',
-    password: ''
+    password: '',
+    confirmPassword: ''
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -37,31 +36,25 @@ const Login = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
-    setLoading(true);
 
+    if (formData.password !== formData.confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+
+    setLoading(true);
     try {
-      console.log('Attempting login with:', formData.email);
-      const response = await axios.post('/api/users/login', {
+      const response = await axios.post('/api/users/register', {
+        name: formData.name,
         email: formData.email,
         password: formData.password
       });
 
-      console.log('Login response:', response.data);
-      
-      if (response.data.token) {
-        localStorage.setItem('token', response.data.token);
-        await login(formData.email, formData.password);
-        navigate('/dashboard');
-      } else {
-        throw new Error('No token received from server');
+      if (response.data) {
+        navigate('/login', { state: { message: 'Registration successful! Please login.' } });
       }
     } catch (err) {
-      console.error('Login error:', err);
-      setError(
-        err.response?.data?.message ||
-        err.message ||
-        'Failed to login. Please check your credentials.'
-      );
+      setError(err.response?.data?.message || 'Registration failed');
     } finally {
       setLoading(false);
     }
@@ -81,14 +74,8 @@ const Login = () => {
           }}
         >
           <Typography component="h1" variant="h5" gutterBottom>
-            Sign In
+            Register
           </Typography>
-
-          {location.state?.message && (
-            <Alert severity="success" sx={{ width: '100%', mb: 2 }}>
-              {location.state.message}
-            </Alert>
-          )}
 
           {error && (
             <Alert severity="error" sx={{ width: '100%', mb: 2 }}>
@@ -101,10 +88,21 @@ const Login = () => {
               margin="normal"
               required
               fullWidth
+              label="Full Name"
+              name="name"
+              autoComplete="name"
+              autoFocus
+              value={formData.name}
+              onChange={handleChange}
+              disabled={loading}
+            />
+            <TextField
+              margin="normal"
+              required
+              fullWidth
               label="Email Address"
               name="email"
               autoComplete="email"
-              autoFocus
               value={formData.email}
               onChange={handleChange}
               disabled={loading}
@@ -116,8 +114,19 @@ const Login = () => {
               name="password"
               label="Password"
               type="password"
-              autoComplete="current-password"
+              autoComplete="new-password"
               value={formData.password}
+              onChange={handleChange}
+              disabled={loading}
+            />
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              name="confirmPassword"
+              label="Confirm Password"
+              type="password"
+              value={formData.confirmPassword}
               onChange={handleChange}
               disabled={loading}
             />
@@ -128,14 +137,11 @@ const Login = () => {
               sx={{ mt: 3, mb: 2 }}
               disabled={loading}
             >
-              {loading ? <CircularProgress size={24} /> : 'Sign In'}
+              {loading ? <CircularProgress size={24} /> : 'Register'}
             </Button>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-              <Link href="/register" variant="body2">
-                {"Don't have an account? Sign Up"}
-              </Link>
-              <Link href="/forgot-password" variant="body2">
-                Forgot password?
+            <Box sx={{ textAlign: 'center' }}>
+              <Link href="/login" variant="body2">
+                Already have an account? Sign in
               </Link>
             </Box>
           </Box>
@@ -145,4 +151,4 @@ const Login = () => {
   );
 };
 
-export default Login;
+export default Register;

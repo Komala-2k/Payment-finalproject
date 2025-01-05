@@ -4,78 +4,87 @@ const bcrypt = require('bcryptjs');
 const userSchema = new mongoose.Schema({
   name: {
     type: String,
-    required: [true, 'Name is required'],
+    required: true,
     trim: true
   },
   email: {
     type: String,
-    required: [true, 'Email is required'],
+    required: true,
     unique: true,
-    trim: true,
     lowercase: true,
+    trim: true,
     match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please enter a valid email']
+  },
+  password: {
+    type: String,
+    required: true,
+    minlength: 6
   },
   username: {
     type: String,
-    unique: true,
     required: true,
+    unique: true,
     trim: true,
     lowercase: true,
-    minlength: [3, 'Username must be at least 3 characters'],
-    maxlength: [30, 'Username cannot exceed 30 characters'],
-    match: [/^[a-zA-Z0-9._-]+$/, 'Username can only contain letters, numbers, dots, underscores, and hyphens']
+    minlength: 3
+  },
+  phoneNumber: {
+    type: String,
+    required: true,
+    trim: true
   },
   upiId: {
     type: String,
     unique: true,
-    required: true
-  },
-  password: {
-    type: String,
-    required: [true, 'Password is required'],
-    minlength: [6, 'Password must be at least 6 characters']
+    sparse: true,
+    trim: true
   },
   balance: {
     type: Number,
     default: 0,
-    min: [0, 'Balance cannot be negative']
+    min: 0
   },
+  resetPasswordToken: {
+    type: String,
+    sparse: true
+  },
+  resetPasswordExpires: {
+    type: Date,
+    sparse: true
+  },
+  resetToken: String,
+  resetTokenExpiry: Date,
   createdAt: {
     type: Date,
     default: Date.now
-  },
-  phoneNumber: {
-    type: String,
-    unique: true,
-    sparse: true,
-    match: [/^[0-9]{10}$/, 'Please enter a valid 10-digit phone number']
   }
+}, {
+  timestamps: true
 });
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) {
-    return next();
-  }
-  try {
+  if (this.isModified('password')) {
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (error) {
-    next(error);
   }
+  next();
 });
 
-// Method to compare password
-userSchema.methods.comparePassword = async function(candidatePassword) {
-  try {
-    return await bcrypt.compare(candidatePassword, this.password);
-  } catch (error) {
-    throw error;
+// Generate UPI ID if not set
+userSchema.pre('save', function(next) {
+  if (!this.upiId) {
+    this.upiId = `${this.username}@digitalwallet`;
   }
+  next();
+});
+
+// Method to check password
+userSchema.methods.comparePassword = async function(candidatePassword) {
+  return bcrypt.compare(candidatePassword, this.password);
 };
 
-// Add indexes
+// Add indexes for faster queries
 userSchema.index({ email: 1 });
 userSchema.index({ username: 1 });
 userSchema.index({ upiId: 1 });

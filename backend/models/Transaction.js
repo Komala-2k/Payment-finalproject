@@ -14,27 +14,38 @@ const transactionSchema = new mongoose.Schema({
   amount: {
     type: Number,
     required: true,
-    min: [1, 'Amount must be at least 1']
+    min: 0
   },
-  description: {
+  type: {
     type: String,
-    trim: true,
-    maxlength: [200, 'Description cannot be more than 200 characters']
+    enum: ['transfer', 'add_money', 'withdraw'],
+    required: true
   },
   status: {
     type: String,
     enum: ['pending', 'completed', 'failed'],
-    default: 'completed'
+    default: 'pending'
+  },
+  description: {
+    type: String,
+    required: true
+  },
+  transactionId: {
+    type: String,
+    required: true,
+    unique: true
   },
   timestamp: {
     type: Date,
     default: Date.now
   }
+}, {
+  timestamps: true
 });
 
-// Add indexes for better query performance
-transactionSchema.index({ sender: 1, timestamp: -1 });
-transactionSchema.index({ receiver: 1, timestamp: -1 });
+// Add indexes for faster queries
+transactionSchema.index({ sender: 1, receiver: 1 });
+transactionSchema.index({ transactionId: 1 });
 transactionSchema.index({ timestamp: -1 });
 
 const Transaction = mongoose.model('Transaction', transactionSchema);

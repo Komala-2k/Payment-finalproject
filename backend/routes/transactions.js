@@ -1,56 +1,79 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const User = require('../models/User');
 const Transaction = require('../models/Transaction');
+const User = require('../models/User');
 const mongoose = require('mongoose');
+const { v4: uuidv4 } = require('uuid');
+
+// Helper function to validate UPI ID
+const validateUpiId = (upiId) => {
+  return upiId && upiId.includes('@digitalwallet');
+};
+
+// Helper function to update user balances
+const updateBalances = async (senderId, receiverId, amount, session) => {
+  const [sender, receiver] = await Promise.all([
+    User.findByIdAndUpdate(
+      senderId,
+      { $inc: { balance: -amount } },
+      { new: true, session, runValidators: true }
+    ),
+    User.findByIdAndUpdate(
+      receiverId,
+      { $inc: { balance: amount } },
+      { new: true, session, runValidators: true }
+    )
+  ]);
+
+  if (!sender || !receiver) {
+    throw new Error('User not found');
+  }
+
+  if (sender.balance < 0) {
+    throw new Error('Insufficient balance');
+  }
+
+  return { sender, receiver };
+};
 
 // Test endpoint
 router.get('/test', (req, res) => {
   res.json({ message: 'Transaction API is working!' });
 });
 
-// Get all transactions for a user
+// Get user's transaction history
 router.get('/history', auth, async (req, res) => {
   try {
-    const userId = req.user.userId;
-    console.log('Fetching transactions for user:', userId);
-
     const transactions = await Transaction.find({
-      $or: [{ sender: userId }, { receiver: userId }]
+      $or: [
+        { sender: req.user._id },
+        { receiver: req.user._id }
+      ]
     })
     .sort({ timestamp: -1 })
-    .populate('sender', 'name email upiId')
-    .populate('receiver', 'name email upiId')
-    .limit(50);
+    .limit(50)
+    .populate('sender', 'name email')
+    .populate('receiver', 'name email');
 
-    console.log(`Found ${transactions.length} transactions`);
-    
     res.json(transactions);
-  } catch (error) {
-    console.error('Error fetching transactions:', error);
-    res.status(500).json({ message: 'Error fetching transactions' });
+  } catch (err) {
+    console.error('Error fetching transaction history:', err);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Get user details by UPI ID
-router.get('/user/:upiId', auth, async (req, res) => {
+// Get user's balance
+router.get('/balance', auth, async (req, res) => {
   try {
-    console.log('Searching for user with UPI ID:', req.params.upiId);
-    const user = await User.findOne({ upiId: req.params.upiId });
+    const user = await User.findById(req.user._id).select('balance');
     if (!user) {
-      console.log('User not found with UPI ID:', req.params.upiId);
       return res.status(404).json({ message: 'User not found' });
     }
-    console.log('Found user:', user.name);
-    res.json({
-      name: user.name,
-      upiId: user.upiId,
-      email: user.email
-    });
-  } catch (error) {
-    console.error('Error in user lookup:', error);
-    res.status(500).json({ message: 'Error fetching user details' });
+    res.json({ balance: user.balance });
+  } catch (err) {
+    console.error('Error fetching balance:', err);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -61,158 +84,128 @@ router.post('/add-money', auth, async (req, res) => {
 
   try {
     const { amount } = req.body;
-    console.log('Add money request:', { userId: req.user.userId, amount });
-    
-    if (!amount || amount < 1) {
-      return res.status(400).json({ message: 'Please enter a valid amount (minimum ₹1)' });
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ message: 'Invalid amount' });
     }
 
-    // Find user and update balance
-    const user = await User.findById(req.user.userId).session(session);
+    const user = await User.findById(req.user._id).session(session);
     if (!user) {
-      await session.abortTransaction();
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Update user balance
-    const newBalance = (user.balance || 0) + parseFloat(amount);
-    user.balance = newBalance;
-    console.log('Updating balance:', { oldBalance: user.balance - parseFloat(amount), newBalance });
-
     // Create transaction record
     const transaction = new Transaction({
-      sender: user._id,
-      receiver: user._id,
-      amount: parseFloat(amount),
+      sender: req.user._id,
+      receiver: req.user._id,
+      amount,
+      type: 'add_money',
+      status: 'completed',
       description: 'Added money to wallet',
-      status: 'completed'
+      transactionId: uuidv4(),
     });
 
-    // Save both updates
-    await Promise.all([
-      user.save({ session }),
-      transaction.save({ session })
-    ]);
+    await transaction.save({ session });
+
+    // Update user balance
+    user.balance += amount;
+    await user.save({ session });
 
     await session.commitTransaction();
-    console.log('Money added successfully:', { 
-      userId: user._id,
-      amount,
-      newBalance: user.balance,
-      transactionId: transaction._id
-    });
-    
-    res.json({ 
-      message: 'Money added successfully',
-      balance: user.balance,
-      transaction: transaction
-    });
-  } catch (error) {
+    res.json({ transaction, balance: user.balance });
+  } catch (err) {
     await session.abortTransaction();
-    console.error('Add money error:', error);
-    res.status(500).json({ message: 'Error adding money to wallet' });
+    console.error('Error adding money:', err);
+    res.status(500).json({ message: 'Server error' });
   } finally {
     session.endSession();
   }
 });
 
-// Send money to another user
-router.post('/send-money', auth, async (req, res) => {
+// Transfer money
+router.post('/transfer', auth, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const { receiverUpiId, amount, description } = req.body;
-    console.log('Send money request:', { 
-      senderId: req.user.userId,
-      receiverUpiId,
-      amount,
-      description
-    });
+    const { amount, receiverEmail, description } = req.body;
 
-    if (!receiverUpiId || !amount || amount < 1) {
-      return res.status(400).json({ message: 'Please provide valid receiver UPI ID and amount' });
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ message: 'Invalid amount' });
     }
 
-    // Find sender
-    const sender = await User.findById(req.user.userId).session(session);
+    if (!receiverEmail) {
+      return res.status(400).json({ message: 'Receiver email is required' });
+    }
+
+    const sender = await User.findById(req.user._id).session(session);
     if (!sender) {
-      console.log('Sender not found:', req.user.userId);
-      await session.abortTransaction();
       return res.status(404).json({ message: 'Sender not found' });
     }
-    console.log('Sender found:', { name: sender.name, balance: sender.balance });
 
-    // Check sufficient balance
-    if (sender.balance < parseFloat(amount)) {
-      console.log('Insufficient balance:', { required: amount, available: sender.balance });
-      await session.abortTransaction();
-      return res.status(400).json({ message: 'Insufficient balance' });
-    }
-
-    // Find receiver by UPI ID
-    const receiver = await User.findOne({ upiId: receiverUpiId }).session(session);
+    const receiver = await User.findOne({ email: receiverEmail }).session(session);
     if (!receiver) {
-      console.log('Receiver not found:', receiverUpiId);
-      await session.abortTransaction();
       return res.status(404).json({ message: 'Receiver not found' });
     }
-    console.log('Receiver found:', { name: receiver.name });
 
-    if (sender._id.toString() === receiver._id.toString()) {
-      console.log('Self-transfer attempted');
-      await session.abortTransaction();
-      return res.status(400).json({ message: 'Cannot send money to yourself' });
+    if (sender.balance < amount) {
+      return res.status(400).json({ message: 'Insufficient balance' });
     }
-
-    const transferAmount = parseFloat(amount);
 
     // Create transaction record
     const transaction = new Transaction({
       sender: sender._id,
       receiver: receiver._id,
-      amount: transferAmount,
+      amount,
+      type: 'transfer',
+      status: 'completed',
       description: description || 'Money transfer',
-      status: 'completed'
+      transactionId: uuidv4(),
     });
+
+    await transaction.save({ session });
 
     // Update balances
-    sender.balance -= transferAmount;
-    receiver.balance = (receiver.balance || 0) + transferAmount;
+    sender.balance -= amount;
+    receiver.balance += amount;
 
-    console.log('Updating balances:', {
-      senderOldBalance: sender.balance + transferAmount,
-      senderNewBalance: sender.balance,
-      receiverOldBalance: receiver.balance - transferAmount,
-      receiverNewBalance: receiver.balance
-    });
-
-    // Save all updates
     await Promise.all([
       sender.save({ session }),
-      receiver.save({ session }),
-      transaction.save({ session })
+      receiver.save({ session })
     ]);
 
     await session.commitTransaction();
-    console.log('Money sent successfully:', {
-      amount: transferAmount,
-      sender: sender.name,
-      receiver: receiver.name,
-      transactionId: transaction._id
+    res.json({ 
+      transaction,
+      balance: sender.balance
     });
-
-    res.json({
-      message: 'Money sent successfully',
-      balance: sender.balance,
-      transaction: transaction
-    });
-  } catch (error) {
+  } catch (err) {
     await session.abortTransaction();
-    console.error('Send money error:', error);
-    res.status(500).json({ message: 'Error sending money' });
+    console.error('Error transferring money:', err);
+    res.status(500).json({ message: 'Server error' });
   } finally {
     session.endSession();
+  }
+});
+
+// Get user details by UPI ID
+router.get('/user/:upiId', auth, async (req, res) => {
+  try {
+    console.log('Searching for user with UPI ID:', req.params.upiId);
+    const user = await User.findOne({ upiId: req.params.upiId });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Only return necessary user details
+    res.json({
+      email: user.email,
+      name: user.name,
+      upiId: user.upiId
+    });
+  } catch (err) {
+    console.error('Error fetching user by UPI ID:', err);
+    res.status(500).json({ message: 'Server Error' });
   }
 });
 

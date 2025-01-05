@@ -31,6 +31,67 @@ router.get('/user/:upiId', auth, async (req, res) => {
   }
 });
 
+// Get user balance
+router.get('/balance', auth, async (req, res) => {
+  try {
+    console.log('Fetching balance for user:', req.user.userId);
+    
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    console.log('User balance:', user.balance);
+    res.json({ balance: user.balance || 0 });
+  } catch (error) {
+    console.error('Error fetching balance:', error);
+    res.status(500).json({ message: 'Error fetching balance' });
+  }
+});
+
+// Get transaction history
+router.get('/history', auth, async (req, res) => {
+  try {
+    console.log('Fetching transaction history for user:', req.user.userId);
+    
+    const transactions = await Transaction.find({
+      $or: [
+        { sender: req.user.userId },
+        { receiver: req.user.userId }
+      ]
+    })
+    .sort({ timestamp: -1 })
+    .populate('sender', 'name email')
+    .populate('receiver', 'name email')
+    .limit(50);
+
+    console.log(`Found ${transactions.length} transactions`);
+
+    const formattedTransactions = transactions.map(transaction => {
+      const isReceiver = transaction.receiver && 
+                        transaction.receiver._id.toString() === req.user.userId;
+      
+      return {
+        _id: transaction._id,
+        type: isReceiver ? 'credit' : 'debit',
+        amount: transaction.amount,
+        date: transaction.timestamp,
+        status: transaction.status,
+        description: transaction.description || '',
+        senderEmail: transaction.sender ? transaction.sender.email : 'System',
+        recipientEmail: transaction.receiver ? transaction.receiver.email : 'System',
+        senderName: transaction.sender ? transaction.sender.name : 'System',
+        recipientName: transaction.receiver ? transaction.receiver.name : 'System'
+      };
+    });
+
+    res.json(formattedTransactions);
+  } catch (error) {
+    console.error('Error fetching transaction history:', error);
+    res.status(500).json({ message: 'Error fetching transaction history' });
+  }
+});
+
 // Add money to wallet
 router.post('/add-money', auth, async (req, res) => {
   const session = await mongoose.startSession();
@@ -54,32 +115,30 @@ router.post('/add-money', auth, async (req, res) => {
     // Create transaction record
     const transaction = new Transaction({
       sender: user._id,
+      receiver: user._id,
       type: 'ADD_MONEY',
-      amount: parseFloat(amount),
-      description: 'Added money to wallet',
-      status: 'COMPLETED'
+      amount: amount,
+      status: 'COMPLETED',
+      description: 'Added money to wallet'
     });
 
     // Update user balance
-    const newBalance = (user.balance || 0) + parseFloat(amount);
-    user.balance = newBalance;
-    console.log('Updating balance:', { oldBalance: user.balance - parseFloat(amount), newBalance });
+    user.balance = (user.balance || 0) + amount;
 
-    // Save both transaction and user update
+    // Save changes
     await Promise.all([
       transaction.save({ session }),
       user.save({ session })
     ]);
 
     await session.commitTransaction();
-    console.log('Money added successfully:', { 
-      userId: user._id,
+    console.log('Money added successfully:', {
+      transactionId: transaction._id,
       amount,
-      newBalance: user.balance,
-      transactionId: transaction._id
+      newBalance: user.balance
     });
-    
-    res.json({ 
+
+    res.json({
       message: 'Money added successfully',
       balance: user.balance,
       transaction: {
@@ -92,98 +151,77 @@ router.post('/add-money', auth, async (req, res) => {
     });
   } catch (error) {
     await session.abortTransaction();
-    console.error('Add money error:', error);
+    console.error('Error adding money:', error);
     res.status(500).json({ message: 'Error adding money to wallet' });
   } finally {
     session.endSession();
   }
 });
 
-// Send money to another user
-router.post('/send-money', auth, async (req, res) => {
+// Send money
+router.post('/send', auth, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const { receiverUpiId, amount, description } = req.body;
-    console.log('Send money request:', { 
-      senderId: req.user.userId,
-      receiverUpiId,
-      amount,
-      description
-    });
+    const { recipientEmail, amount, description } = req.body;
+    console.log('Send money request:', { sender: req.user.userId, recipientEmail, amount });
 
-    if (!receiverUpiId || !amount || amount < 1) {
-      return res.status(400).json({ message: 'Please provide valid receiver UPI ID and amount' });
+    if (!recipientEmail || !amount) {
+      return res.status(400).json({ message: 'Recipient email and amount are required' });
+    }
+
+    if (amount < 1) {
+      return res.status(400).json({ message: 'Amount must be at least ₹1' });
     }
 
     // Find sender
     const sender = await User.findById(req.user.userId).session(session);
     if (!sender) {
-      console.log('Sender not found:', req.user.userId);
       await session.abortTransaction();
       return res.status(404).json({ message: 'Sender not found' });
     }
-    console.log('Sender found:', { name: sender.name, balance: sender.balance });
 
-    // Check sufficient balance
-    if (sender.balance < parseFloat(amount)) {
-      console.log('Insufficient balance:', { required: amount, available: sender.balance });
+    // Check sender balance
+    if (sender.balance < amount) {
       await session.abortTransaction();
       return res.status(400).json({ message: 'Insufficient balance' });
     }
 
-    // Find receiver by UPI ID
-    const receiver = await User.findOne({ upiId: receiverUpiId }).session(session);
-    if (!receiver) {
-      console.log('Receiver not found:', receiverUpiId);
+    // Find recipient
+    const recipient = await User.findOne({ email: recipientEmail }).session(session);
+    if (!recipient) {
       await session.abortTransaction();
-      return res.status(404).json({ message: 'Receiver not found' });
-    }
-    console.log('Receiver found:', { name: receiver.name });
-
-    if (sender._id.toString() === receiver._id.toString()) {
-      console.log('Self-transfer attempted');
-      await session.abortTransaction();
-      return res.status(400).json({ message: 'Cannot send money to yourself' });
+      return res.status(404).json({ message: 'Recipient not found' });
     }
 
-    const transferAmount = parseFloat(amount);
-
-    // Create transaction record
+    // Create transaction
     const transaction = new Transaction({
       sender: sender._id,
-      receiver: receiver._id,
-      type: 'TRANSFER',
-      amount: transferAmount,
+      receiver: recipient._id,
+      type: 'SEND_MONEY',
+      amount: amount,
       description: description || 'Money transfer',
       status: 'COMPLETED'
     });
 
     // Update balances
-    sender.balance -= transferAmount;
-    receiver.balance = (receiver.balance || 0) + transferAmount;
+    sender.balance -= amount;
+    recipient.balance = (recipient.balance || 0) + amount;
 
-    console.log('Updating balances:', {
-      senderOldBalance: sender.balance + transferAmount,
-      senderNewBalance: sender.balance,
-      receiverOldBalance: receiver.balance - transferAmount,
-      receiverNewBalance: receiver.balance
-    });
-
-    // Save all updates
+    // Save all changes
     await Promise.all([
       transaction.save({ session }),
       sender.save({ session }),
-      receiver.save({ session })
+      recipient.save({ session })
     ]);
 
     await session.commitTransaction();
     console.log('Money sent successfully:', {
       transactionId: transaction._id,
-      amount: transferAmount,
-      sender: sender.name,
-      receiver: receiver.name
+      amount,
+      sender: sender.email,
+      recipient: recipient.email
     });
 
     res.json({
@@ -193,9 +231,9 @@ router.post('/send-money', auth, async (req, res) => {
         id: transaction._id,
         type: transaction.type,
         amount: transaction.amount,
-        receiver: {
-          name: receiver.name,
-          upiId: receiver.upiId
+        recipient: {
+          name: recipient.name,
+          email: recipient.email
         },
         timestamp: transaction.timestamp,
         status: transaction.status
@@ -203,32 +241,10 @@ router.post('/send-money', auth, async (req, res) => {
     });
   } catch (error) {
     await session.abortTransaction();
-    console.error('Send money error:', error);
+    console.error('Error sending money:', error);
     res.status(500).json({ message: 'Error sending money' });
   } finally {
     session.endSession();
-  }
-});
-
-// Get transaction history
-router.get('/history', auth, async (req, res) => {
-  try {
-    console.log('Fetching transaction history for user:', req.user.userId);
-    const transactions = await Transaction.find({
-      $or: [
-        { sender: req.user.userId },
-        { receiver: req.user.userId }
-      ]
-    })
-    .sort({ timestamp: -1 })
-    .populate('sender', 'name upiId')
-    .populate('receiver', 'name upiId');
-
-    console.log('Found transactions:', transactions.length);
-    res.json(transactions);
-  } catch (error) {
-    console.error('Transaction history error:', error);
-    res.status(500).json({ message: 'Error fetching transaction history' });
   }
 });
 
